@@ -1,14 +1,18 @@
 # from IPython import display
+import grequests
 import requests
 from lxml import html
-from lxml.etree import XPathEvalError
 import pandas as pd
-import sys
+import re
+
 from configparser import ConfigParser
 
-config = ConfigParser('config.ini')
+config = ConfigParser()
+config.read('config.ini')
 email = config['login']['email']
 password = config['login']['password']
+
+pd.set_option('display.max_rows', 100)
 
 df = pd.DataFrame()
 
@@ -16,39 +20,47 @@ url = 'https://profitus.lt/users/login'
 
 resp = ''
 
-with requests.session() as client:
-  client.get(url)
-  csrftoken = client.cookies['csrfToken']
-  login_data = dict(email=email, password=password, _csrfToken=csrftoken, next='/')
-  r = client.post(url, data=login_data, headers=dict(Referer=url))
-  resp = client.get('https://www.profitus.lt/secondary-market') # ?page=5
-  tree = html.fromstring(resp.text)
-  next_url = 'https://profitus.lt' + tree.xpath('//a[@class="page-link-p fw-700"]')[0].values()[0]
+login_data = {}
 
-  df = pd.read_html(resp.text)[0]
-  try:
-    while next_url:
-      b = 2
-      resp = client.get(next_url)
-      print(resp.url)
-      tree = html.fromstring(resp.text)
-      next_url = 'https://profitus.lt' + tree.xpath('//a[@class="page-link-p fw-700"]')[b].values()[0]
-      # df.merge(pd.read_html(resp.text)[0])
-      df = pd.concat((df, pd.read_html(resp.text)[0]))
-      if len(tree.xpath('//a[@class="page-link-p fw-700"]')) == 4:
-        b = 2
-      else:
-        raise XPathEvalError('ok')
-  except (XPathEvalError, IndexError):
-      print('ok')
-  print(df.columns)
+def get_data():
+  urls = []
+  with requests.session() as client:
+    client.get(url)
+    csrftoken = client.cookies['csrfToken']
+    login_data = dict(email=email, password=password, _csrfToken=csrftoken, next='/')
+    r = client.post(url, data=login_data, headers=dict(Referer=url))
+    resp = client.get('https://www.profitus.lt/secondary-market')
+    tree = html.fromstring(resp.text)
+    next_url = 'https://profitus.lt' + tree.xpath('//a[@class="page-link-p fw-700"]')[-1].values()[0]
+
+    number_of_pages = int(re.search("\d+", next_url).group())
+
+    for i in range(1, number_of_pages+1):
+      urls.append(f'https://www.profitus.lt/secondary-market?page={i}')
+      
+    reqs = [grequests.get(link, headers=dict(Referer=url), session=client) for link in urls]
+    resp = grequests.map(reqs)
+    return resp
+
+def parse_data(resp):
+  global df
+  for r in resp:
+    print(r.url)
+    df = pd.concat([df, pd.read_html(r.text)[0]])
+
+  print('scraping is over!')
+
+resp = get_data()
+parse_data(resp)
+
+
 df = df.drop(['Unnamed: 0', 'Unnamed: 9'], axis=1)
 
 df['Projekto pavadinimas'] = df['Projekto pavadinimas'].map(lambda x: x.lstrip('Projekto pavadinimas:&nbsp '))
 df['Reitingas'] = df['Reitingas'].map(lambda x: x.lstrip('Reitingas:&nbsp '))
 df['Likęs terminas'] = df['Likęs terminas'].map(lambda x: x.lstrip('Likęs terminas:&nbsp ').rstrip('mėn.'))
 
-df['Likęs terminas'] = df['Likęs terminas'].map(lambda x: x.split('/')[0]).astype(int)
+df['Likęs terminas'] = df['Likęs terminas'].map(lambda x: x.split('/')[0]).astype(int) + 1 # 1 month and 29 days is considered as 1 month, we're calculating worst example possible. only those will be worth to buy
 
 
 df['Likusi suma'] = df['Likusi suma'].map(lambda x: x.lstrip('Likusi suma:&nbsp'))
@@ -78,8 +90,6 @@ df['Pardavimo kaina'] = df['Pardavimo kaina'].map(lambda x: x.lstrip('Pardavimo 
 df['Pardavimo kaina'] = df['Pardavimo kaina'].str.replace('€', '')
 df['Pardavimo kaina'] = df['Pardavimo kaina'].str.replace(',', '').astype(float)
 
-import numpy as np
-df[df['Likęs terminas'] < 1] = 1
-df['Realios palūkanos'] = (np.power(df['Likusi gautina sumai'] / df['Pardavimo kaina'], 1/(df['Likęs terminas']/12)) - 1 ) * 100
-
-df.sort_values('profit%', ascending=False).head(10)
+df['Realios palūkanos'] = (df['Likusi gautina sumai'] - df['Pardavimo kaina']) * 100 / df['Pardavimo kaina'] / (df['Likęs terminas']/12)
+print(df[(df['Palūkanų norma'] - df['Realios palūkanos']) < 0]) # basically we're trying to find projects that have largest interest rate, than
+df.sort_values('Realios palūkanos', ascending=False).head(100)
