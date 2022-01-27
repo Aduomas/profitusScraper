@@ -1,3 +1,5 @@
 [login]
 email=XXX
 password=XXX
+from_email=XXX
+from_password=XXX

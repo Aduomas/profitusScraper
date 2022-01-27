@@ -60,7 +60,7 @@ df['Projekto pavadinimas'] = df['Projekto pavadinimas'].map(lambda x: x.lstrip('
 df['Reitingas'] = df['Reitingas'].map(lambda x: x.lstrip('Reitingas:&nbsp '))
 df['Likęs terminas'] = df['Likęs terminas'].map(lambda x: x.lstrip('Likęs terminas:&nbsp ').rstrip('mėn.'))
 
-df['Likęs terminas'] = df['Likęs terminas'].map(lambda x: x.split('/')[0]).astype(int) + 1 # 1 month and 29 days is considered as 1 month, we're calculating worst example possible. only those will be worth to buy
+df['Likęs terminas'] = df['Likęs terminas'].map(lambda x: x.split('/')[0]).astype(int) # 1 month and 29 days is considered as 1 month, we're calculating worst example possible. only those will be worth to buy
 
 
 df['Likusi suma'] = df['Likusi suma'].map(lambda x: x.lstrip('Likusi suma:&nbsp'))
@@ -75,8 +75,9 @@ df['Palūkanų norma'] = df['Palūkanų norma'].str.replace('%', '').astype(floa
 
 df['Statusas'] = df['Statusas'].map(lambda x: x.lstrip('Statusas:&nbsp'))
 
-df['Statusas'] = df['Statusas'].str.replace('Aktyvus', '1')
-df['Statusas'] = df['Statusas'].str.replace('Vėluoja', '2').astype(int)
+
+# df['Statusas'] = df['Statusas'].str.replace('Aktyvus', '1')
+# df['Statusas'] = df['Statusas'].str.replace('Vėluoja', '2').astype(int)
 
 
 
@@ -90,6 +91,45 @@ df['Pardavimo kaina'] = df['Pardavimo kaina'].map(lambda x: x.lstrip('Pardavimo 
 df['Pardavimo kaina'] = df['Pardavimo kaina'].str.replace('€', '')
 df['Pardavimo kaina'] = df['Pardavimo kaina'].str.replace(',', '').astype(float)
 
-df['Realios palūkanos'] = (df['Likusi gautina sumai'] - df['Pardavimo kaina']) * 100 / df['Pardavimo kaina'] / (df['Likęs terminas']/12)
+import numpy as np
+df[df['Likęs terminas'] < 1] = 1
+df['Realios palūkanos'] = (np.power(df['Likusi gautina sumai'] / df['Pardavimo kaina'], 1/((df['Likęs terminas'] + 1)/12)) - 1 ) * 100
+df['diff'] = (df['Realios palūkanos'] - df['Palūkanų norma'])
+
 print(df[(df['Palūkanų norma'] - df['Realios palūkanos']) < 0]) # basically we're trying to find projects that have largest interest rate, than
 df.sort_values('Realios palūkanos', ascending=False).head(100)
+
+
+# sent_mail = df[(df['Palūkanų norma'] - df['Realios palūkanos']) < 0]
+sent_mail = df[df['diff'] > 0]
+
+
+import smtplib, ssl
+import io
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+
+port = 465
+password = config['login']['from_password']
+
+str_io = io.StringIO()
+sent_mail.to_html(buf=str_io, classes='table table-striped')
+html_str = str_io.getvalue()
+context = ssl.create_default_context()
+
+msg = MIMEMultipart('alternative')
+msg['Subject'] = 'Profitus daily'
+msg['From'] = config['login']['from_email']
+from datetime import datetime
+text = f"Hi this is {datetime.now().strftime('%m-%d')} report"
+part1 = MIMEText(text, 'plain')
+part2 = MIMEText(html_str, 'html')
+
+msg.attach(part1)
+msg.attach(part2)
+
+with smtplib.SMTP_SSL("smtp.gmail.com", port, context=context) as server:
+  server.login(config['login']['from_email'], password)
+  server.sendmail(config['login']['from_email'], "XXX", msg.as_string())
+  server.sendmail(config['login']['from_email'], "XXX", msg.as_string())
+  
